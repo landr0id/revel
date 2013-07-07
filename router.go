@@ -85,7 +85,7 @@ func treePath(method, path string) string {
 type Router struct {
 	Routes []*Route
 	Tree   *pathtree.Node
-	path   string // path to the routes file
+	paths  []string // path to the files which contain routes
 }
 
 var notFound = &RouteMatch{Action: "404"}
@@ -131,9 +131,14 @@ func (router *Router) Route(req *http.Request) *RouteMatch {
 // Refresh re-reads the routes file and re-calculates the routing table.
 // Returns an error if a specified action could not be found.
 func (router *Router) Refresh() (err *Error) {
-	router.Routes, err = parseRoutesFile(router.path, true)
-	if err != nil {
-		return
+	router.Routes = []*Route{}
+	var tempRoutes []*Route
+	for _, path := range router.paths {
+		tempRoutes, err = parseRoutesFile(path, true)
+		if err != nil {
+			return
+		}
+		router.Routes = append(router.Routes, tempRoutes...)
 	}
 	err = router.updateTree()
 	return
@@ -294,10 +299,10 @@ func parseRouteLine(line string) (method, path, action, fixedArgs string, found 
 	return
 }
 
-func NewRouter(routesPath string) *Router {
+func NewRouter(routesPaths []string) *Router {
 	return &Router{
-		Tree: pathtree.New(),
-		path: routesPath,
+		Tree:  pathtree.New(),
+		paths: routesPaths,
 	}
 }
 
@@ -392,9 +397,13 @@ func (router *Router) Reverse(action string, argValues map[string]string) *Actio
 
 func init() {
 	OnAppStart(func() {
-		MainRouter = NewRouter(path.Join(BasePath, "conf", "routes"))
+		paths := make([]string, len(RoutesPaths))
+		for i, filePath := range RoutesPaths {
+			paths[i] = path.Join(BasePath, filePath)
+		}
+		MainRouter = NewRouter(paths)
 		if MainWatcher != nil && Config.BoolDefault("watch.routes", true) {
-			MainWatcher.Listen(MainRouter, MainRouter.path)
+			MainWatcher.Listen(MainRouter, MainRouter.paths...)
 		} else {
 			MainRouter.Refresh()
 		}

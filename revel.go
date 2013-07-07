@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -37,6 +38,7 @@ var (
 	CodePaths     []string
 	ConfPaths     []string
 	TemplatePaths []string
+	RoutesPaths   []string
 
 	Modules []Module
 
@@ -135,12 +137,29 @@ func Init(mode, importPath, srcPath string) {
 	if secretStr := Config.StringDefault("app.secret", ""); secretStr != "" {
 		secretKey = []byte(secretStr)
 	}
+	routingFiles := Config.StringDefault("app.routes_paths", "[conf/routes]")
 
 	// Configure logging.
 	TRACE = getLogger("trace")
 	INFO = getLogger("info")
 	WARN = getLogger("warn")
 	ERROR = getLogger("error")
+
+	match, err := regexp.MatchString(`\[.+\]`, routingFiles)
+	if err != nil || !match {
+		WARN.Println("app.conf: app.routes_paths setting invalid -- falling back to default path")
+		RoutesPaths = []string{"app/conf/routes"}
+	} else {
+		// Returns all of the paths within the brackets, removing any trailing/preceding whitespace
+		RoutesPaths = regexp.MustCompile(`\s+`).Split(strings.TrimSpace(routingFiles[1:len(routingFiles)-1]), -1)
+		// Test the file paths to make sure they're actually files
+		for _, p := range RoutesPaths {
+			file, err := os.Stat(path.Join(BasePath, p))
+			if err != nil || file.IsDir() {
+				ERROR.Fatalln("app.conf: app.routes_paths contains invalid path:", p)
+			}
+		}
+	}
 
 	loadModules()
 

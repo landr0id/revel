@@ -203,7 +203,7 @@ var routeMatchTestCases = map[*http.Request]*RouteMatch{
 
 func TestRouteMatches(t *testing.T) {
 	BasePath = "/BasePath"
-	router := NewRouter("")
+	router := NewRouter([]string{""})
 	router.Routes, _ = parseRoutes("", TEST_ROUTES, false)
 	router.updateTree()
 	for req, expected := range routeMatchTestCases {
@@ -275,7 +275,7 @@ var reverseRoutingTestCases = map[*ReverseRouteArgs]*ActionDefinition{
 }
 
 func TestReverseRouting(t *testing.T) {
-	router := NewRouter("")
+	router := NewRouter([]string{""})
 	router.Routes, _ = parseRoutes("", TEST_ROUTES, false)
 	for routeArgs, expected := range reverseRoutingTestCases {
 		actual := router.Reverse(routeArgs.action, routeArgs.args)
@@ -290,7 +290,7 @@ func TestReverseRouting(t *testing.T) {
 }
 
 func BenchmarkRouter(b *testing.B) {
-	router := NewRouter("")
+	router := NewRouter([]string{""})
 	router.Routes, _ = parseRoutes("", TEST_ROUTES, false)
 	router.updateTree()
 	b.ResetTimer()
@@ -306,7 +306,7 @@ func BenchmarkRouter(b *testing.B) {
 
 // The benchmark from github.com/ant0ine/go-urlrouter
 func BenchmarkLargeRouter(b *testing.B) {
-	router := NewRouter("")
+	router := NewRouter([]string{""})
 
 	routePaths := []string{
 		"/",

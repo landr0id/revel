@@ -69,7 +69,7 @@ func startFakeBookingApp() {
 
 	runStartupHooks()
 
-	MainRouter = NewRouter("")
+	MainRouter = NewRouter([]string{""})
 	routesFile, _ := ioutil.ReadFile(filepath.Join(BasePath, "conf", "routes"))
 	MainRouter.Routes, _ = parseRoutes("", string(routesFile), false)
 	MainRouter.updateTree()
