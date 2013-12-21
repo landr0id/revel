@@ -3,7 +3,6 @@
 # ~~~~
 
 module:testrunner
-module:jobs
 
 GET     /                                       Application.Index
 GET     /hotels                                 Hotels.Index
@@ -18,6 +17,9 @@ GET     /settings                               Hotels.Settings
 POST    /settings                               Hotels.SaveSettings
 POST    /login                                  Application.Login
 GET     /logout                                 Application.Logout
+
+# Jobs routing
+*		/jobs									module:jobs
 
 # Map static resources from the /app/public folder to the /public path
 GET     /public/*filepath                       Static.Serve("public")
