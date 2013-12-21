@@ -4,6 +4,7 @@
 
 module:testrunner
 module:jobs
+module:pprof
 
 GET     /                                       Application.Index
 GET     /hotels                                 Hotels.Index
