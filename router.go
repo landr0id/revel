@@ -1,17 +1,18 @@
 package revel
 
 import (
-	"encoding/csv"
+	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/robfig/pathtree"
+	"gopkg.in/v1/yaml"
 )
 
 type Route struct {
@@ -42,23 +43,15 @@ type arg struct {
 }
 
 // Prepares the route to be used in matching.
-func NewRoute(method, path, action, fixedArgs, routesPath string, line int) (r *Route) {
-	// Handle fixed arguments
-	argsReader := strings.NewReader(fixedArgs)
-	csv := csv.NewReader(argsReader)
-	fargs, err := csv.Read()
-	if err != nil && err != io.EOF {
-		ERROR.Printf("Invalid fixed parameters (%v): for string '%v'", err.Error(), fixedArgs)
-	}
-
+func NewRoute(method, path, action, routesPath string, fixedArgs []string) (r *Route) {
 	r = &Route{
 		Method:      strings.ToUpper(method),
 		Path:        path,
 		Action:      action,
-		FixedParams: fargs,
+		FixedParams: fixedArgs,
 		TreePath:    treePath(strings.ToUpper(method), path),
 		routesPath:  routesPath,
-		line:        line,
+		line:        0,
 	}
 
 	// URL pattern
@@ -152,7 +145,7 @@ func (router *Router) updateTree() *Error {
 
 		// Error adding a route to the pathtree.
 		if err != nil {
-			return routeError(err, route.routesPath, "", route.line)
+			return routeError(err, route.routesPath, "", 0)
 		}
 	}
 	return nil
@@ -170,63 +163,90 @@ func parseRoutesFile(routesPath, joinedPath string, validate bool) ([]*Route, *E
 	return parseRoutes(routesPath, joinedPath, string(contentBytes), validate)
 }
 
+var (
+	routeMethodPattern   *regexp.Regexp = regexp.MustCompile("(?i)(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|WS|\\*)")
+	requiredRouteOptions []string       = []string{"method", "path", "action"}
+)
+
+func lineFromYamlError(err error) int {
+	if strings.Contains(err.Error(), "YAML") {
+		strconv.Atoi(err.Error()[17:])
+	}
+	return 0
+}
+
 // parseRoutes reads the content of a routes file into the routing table.
+// joinedPath is the recursively passed in prefix for routes.
 func parseRoutes(routesPath, joinedPath, content string, validate bool) ([]*Route, *Error) {
-	var routes []*Route
+	var (
+		routes     []*Route
+		parsedYaml []map[string]interface{}
+	)
 
-	// For each line..
-	for n, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if len(line) == 0 || line[0] == '#' {
+	if err := yaml.Unmarshal([]byte(content), &parsedYaml); err != nil {
+		return nil, routeError(err, routesPath, content, lineFromYamlError(err))
+	}
+
+	for _, route := range parsedYaml {
+		if route == nil {
 			continue
 		}
 
-		const modulePrefix = "module:"
-
-		// Handle included routes from modules.
-		// e.g. "module:testrunner" imports all routes from that module.
-		if strings.HasPrefix(line, modulePrefix) {
-			moduleRoutes, err := getModuleRoutes(line[len(modulePrefix):], joinedPath, validate)
-			if err != nil {
-				return nil, routeError(err, routesPath, content, n)
+		// If this is a module import...
+		if moduleName, ok := route["import"].(string); ok {
+			var prefix string
+			if prefix, ok = route["prefix"].(string); !ok {
+				prefix = ""
 			}
-			routes = append(routes, moduleRoutes...)
-			continue
-		}
 
-		// A single route
-		method, path, action, fixedArgs, found := parseRouteLine(line)
-		if !found {
-			continue
-		}
-
-		// this will avoid accidental double forward slashes in a route.
-		// this also avoids pathtree freaking out and causing a runtime panic
-		// because of the double slashes
-		if strings.HasSuffix(joinedPath, "/") && strings.HasPrefix(path, "/") {
-			joinedPath = joinedPath[0 : len(joinedPath)-1]
-		}
-		path = strings.Join([]string{joinedPath, path}, "")
-
-		// This will import the module routes under the path described in the
-		// routes file (joinedPath param). e.g. "* /jobs module:jobs" -> all
-		// routes' paths will have the path /jobs prepended to them.
-		// See #282 for more info
-		if method == "*" && strings.HasPrefix(action, modulePrefix) {
-			moduleRoutes, err := getModuleRoutes(action[len(modulePrefix):], path, validate)
-			if err != nil {
-				return nil, routeError(err, routesPath, content, n)
+			// this will avoid accidental double forward slashes in a route.
+			// this also avoids pathtree freaking out and causing a runtime panic
+			// because of the double slashes
+			if strings.HasSuffix(joinedPath, "/") && strings.HasPrefix(prefix, "/") {
+				joinedPath = joinedPath[0 : len(joinedPath)-1]
 			}
+			modulePrefix := strings.Join([]string{joinedPath, prefix}, "")
+
+			moduleRoutes, err := getModuleRoutes(moduleName, modulePrefix, validate)
+			if err != nil {
+				return nil, routeError(err, routesPath, content, lineFromYamlError(err))
+			}
+
 			routes = append(routes, moduleRoutes...)
-			continue
-		}
+		} else {
+			// This should be a valid route of format:
+			//	- method: (GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|WS|\\*)
+			//	- path: /example/path
+			//	- action: <Controller>.<Action>
+			//	- params: ["first", "second"]
 
-		route := NewRoute(method, path, action, fixedArgs, routesPath, n)
-		routes = append(routes, route)
+			// Verify all of the required keys are present. "params" is optional
+			for _, key := range requiredRouteOptions {
+				if _, ok := route[key]; !ok {
+					return nil, routeError(errors.New(fmt.Sprintf("Missing required route option \"%s\"", key)), routesPath, content, 0)
+				}
+			}
 
-		if validate {
-			if err := validateRoute(route); err != nil {
-				return nil, routeError(err, routesPath, content, n)
+			// this will be nil if there are no params, but this needs to be a string slice
+			var params []string
+			_, ok := route["params"]
+			if ok {
+				for _, val := range route["params"].([]interface{}) {
+					params = append(params, val.(string))
+				}
+			}
+
+			method := route["method"].(string)
+			path := route["path"].(string)
+			action := route["action"].(string)
+
+			route := NewRoute(method, path, action, routesPath, params)
+			routes = append(routes, route)
+
+			if validate {
+				if err := validateRoute(route); err != nil {
+					return nil, routeError(err, routesPath, content, 0)
+				}
 			}
 		}
 	}
@@ -262,7 +282,7 @@ func validateRoute(route *Route) error {
 }
 
 // routeError adds context to a simple error message.
-func routeError(err error, routesPath, content string, n int) *Error {
+func routeError(err error, routesPath, content string, line int) *Error {
 	if revelError, ok := err.(*Error); ok {
 		return revelError
 	}
@@ -279,7 +299,7 @@ func routeError(err error, routesPath, content string, n int) *Error {
 		Title:       "Route validation error",
 		Description: err.Error(),
 		Path:        routesPath,
-		Line:        n + 1,
+		Line:        line,
 		SourceLines: strings.Split(content, "\n"),
 	}
 }
@@ -294,28 +314,7 @@ func getModuleRoutes(moduleName, joinedPath string, validate bool) ([]*Route, *E
 		INFO.Println("Skipping routes for inactive module", moduleName)
 		return nil, nil
 	}
-	return parseRoutesFile(path.Join(module.Path, "conf", "routes"), joinedPath, validate)
-}
-
-// Groups:
-// 1: method
-// 4: path
-// 5: action
-// 6: fixedargs
-var routePattern *regexp.Regexp = regexp.MustCompile(
-	"(?i)^(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|WS|\\*)" +
-		"[(]?([^)]*)(\\))?[ \t]+" +
-		"(.*/[^ \t]*)[ \t]+([^ \t(]+)" +
-		`\(?([^)]*)\)?[ \t]*$`)
-
-func parseRouteLine(line string) (method, path, action, fixedArgs string, found bool) {
-	var matches []string = routePattern.FindStringSubmatch(line)
-	if matches == nil {
-		return
-	}
-	method, path, action, fixedArgs = matches[1], matches[4], matches[5], matches[6]
-	found = true
-	return
+	return parseRoutesFile(path.Join(module.Path, "conf", "routes.yml"), joinedPath, validate)
 }
 
 func NewRouter(routesPath string) *Router {
@@ -416,7 +415,7 @@ func (router *Router) Reverse(action string, argValues map[string]string) *Actio
 
 func init() {
 	OnAppStart(func() {
-		MainRouter = NewRouter(path.Join(BasePath, "conf", "routes"))
+		MainRouter = NewRouter(path.Join(BasePath, "conf", "routes.yml"))
 		if MainWatcher != nil && Config.BoolDefault("watch.routes", true) {
 			MainWatcher.Listen(MainRouter, MainRouter.path)
 		} else {
