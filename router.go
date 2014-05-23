@@ -164,7 +164,7 @@ func parseRoutesFile(routesPath, joinedPath string, validate bool) ([]*Route, *E
 }
 
 var (
-	routeMethodPattern   *regexp.Regexp = regexp.MustCompile("(?i)(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|WS|\\*)")
+	routeMethodPattern   *regexp.Regexp = regexp.MustCompile("(?i)^(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD|WS|\\*)$")
 	requiredRouteOptions []string       = []string{"method", "path", "action"}
 )
 
@@ -237,6 +237,9 @@ func parseRoutes(routesPath, joinedPath, content string, validate bool) ([]*Rout
 			}
 
 			method := route["method"].(string)
+			if !routeMethodPattern.MatchString(method) {
+				return nil, routeError(errors.New(fmt.Sprintf("Unknown route method \"%s\"", method)), routesPath, content, 0)
+			}
 			path := route["path"].(string)
 			action := route["action"].(string)
 
